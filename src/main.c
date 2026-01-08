@@ -237,7 +237,7 @@ static const OpcodeOperandType OPERAND_TYPE_TABLE[] = {
 
 int find_opcode_no_operand(char *to_find) {
     for (size_t i = 0; i < 78; i++) {
-        if (strcmp(to_find, OPCODE_TABLE_NO_OPERAND[i])) {
+        if (strcmp(to_find, OPCODE_TABLE_NO_OPERAND[i]) == 0) {
             return i;
         }
     }
@@ -245,8 +245,8 @@ int find_opcode_no_operand(char *to_find) {
 }
 
 int find_opcode(char *to_find) {
-    for (size_t i = 0; i < 78; i++) {
-        if (strcmp(to_find, OPCODE_TABLE[i])) {
+    for (size_t i = 0; i < 256; i++) {
+        if (strcmp(to_find, OPCODE_TABLE[i]) == 0) {
             return i;
         }
     }
@@ -259,9 +259,36 @@ typedef struct {
     size_t len;
 } ByteCode;
 
+OpcodeOperandType get_operand_type(Token token) {
+    char temp[MAX_TOKEN_LEN];
+    strcpy(temp, token.data);
+
+    string_to_lower(temp);
+
+    int opcode_index = find_opcode_no_operand(temp);
+
+    if (opcode_index == -1) {
+        fprintf(stderr, "ERROR: opcode doesnt exist: %s\n", temp);
+        exit(EXIT_FAILURE);
+    }
+    return OPERAND_TYPE_TABLE[opcode_index];
+}
+
+uint8_t token_to_val(Token *to_convert) {
+    if (to_convert->data[to_convert->size-1] == 'H') {
+        to_convert->data[to_convert->size-1] = '\0';
+        return strtol(to_convert->data, NULL, 16);
+    } else if (to_convert->data[to_convert->size-1] == 'B') {
+        to_convert->data[to_convert->size-1] = '\0';
+        return strtol(to_convert->data, NULL, 2);
+    } else {
+        return strtol(to_convert->data, NULL, 10);
+    }
+}
+
 int main() {
 
-    Tokens tokens = tokenize("START: MVI A, 10 ; 10 -> A\nLOOP: ADI 1");
+    Tokens tokens = tokenize("LXI B,20");
 
     for (size_t i = 0; i < tokens.count; i++) {
         printf("%s\n", tokens.items[i].data);
@@ -270,31 +297,99 @@ int main() {
     vec(uint8_t) byte_code;
     vec_init(byte_code, 100);
 
-
     for (size_t i = 0; i < tokens.count; i++) {
         if (is_token_label(tokens.items[i])) {
             continue;
         }
-        int opcode_index = find_opcode_no_operand(tokens.items[i].data);
-        if (opcode_index == -1) {
-            fprintf(stderr, "ERROR: opcode doesnt exist\n");
-            exit(EXIT_FAILURE);
-        }
-        OpcodeOperandType opcode_operand_type = OPERAND_TYPE_TABLE[opcode_index];
+
+        OpcodeOperandType opcode_operand_type = get_operand_type(tokens.items[i]);
 
         switch (opcode_operand_type) {
             case OP_NONE: {
-                vec_append(byte_code, find_opcode(tokens.items[i].data));
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
                 break;
             }
-            case OP_REG: {
-
+            case OP_REG: case OP_RESET_NUMBER: case OP_RP: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                strcat(temp, " ");
+                i++;
+                strcat(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                break;
+            }
+            case OP_D8: case OP_PORT: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                i++;
+                vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
+                break;
+            }
+            case OP_D16: case OP_ADDRESS: case OP_RP_D16: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                i++;
+                uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
+                vec_append(byte_code, (uint8_t)value);
+                vec_append(byte_code, (uint8_t)(value >> 8));
+                break;
+            }
+            case OP_REG_D8: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                strcat(temp, " ");
+                i++;
+                strcat(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                i++;
+                vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
+                break;
+            }
+            case OP_REG_D16: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                strcat(temp, " ");
+                i++;
+                strcat(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                i++;
+                uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
+                vec_append(byte_code, (uint8_t)value);
+                vec_append(byte_code, (uint8_t)(value >> 8));
+                break;
+            }
+            case OP_REG_REG: {
+                char temp[MAX_TOKEN_LEN];
+                strcpy(temp, tokens.items[i].data);
+                strcat(temp, " ");
+                i++;
+                strcat(temp, tokens.items[i].data);
+                strcat(temp, ",");
+                i++;
+                strcat(temp, tokens.items[i].data);
+                string_to_lower(temp);
+                vec_append(byte_code, find_opcode(temp));
+                break;
             }
         }
+    }
 
+    for (size_t i = 0; i < byte_code.len; i++) {
+        printf("0x%x\n", byte_code.data[i]);
     }
 
     free(tokens.items);
+    vec_cleanup(byte_code);
 
     return 0;
 }
