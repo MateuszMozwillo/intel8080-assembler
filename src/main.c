@@ -22,6 +22,14 @@ typedef struct {
     size_t capacity;
 } Tokens;
 
+void string_to_lower(char* in) {
+    int i = 0;
+    while (in[i]) {
+        in[i] = tolower(in[i]);
+        i++;
+    }
+}
+
 void tokens_append_bfr(Tokens *tokens, char bfr[32], uint8_t *current_bfr_size) {
     if (tokens->count + 1 >= tokens->capacity) {
         tokens->capacity *= 2;
@@ -38,6 +46,8 @@ void tokens_append_bfr(Tokens *tokens, char bfr[32], uint8_t *current_bfr_size) 
 
     tokens->items[tokens->count].data = malloc(sizeof(char) * (*current_bfr_size + 1));
     memcpy(tokens->items[tokens->count].data, bfr, *current_bfr_size + 1);
+
+    string_to_lower(tokens->items[tokens->count].data);
 
     tokens->items[tokens->count].size = *current_bfr_size;
 
@@ -118,7 +128,7 @@ Tokens tokenize(char *to_tokenize) {
                     tokens_append_bfr(&tokens, bfr, &current_bfr_size);
                     state = STATE_COMMENT;
                 }
-                else if (isspace(c)) {
+                else if (isspace(c) || c==',') {
                     tokens_append_bfr(&tokens, bfr, &current_bfr_size);
                     state = STATE_DEFAULT;
                 } else {
@@ -149,14 +159,6 @@ Tokens tokenize(char *to_tokenize) {
     return tokens;
 }
 
-void string_to_lower(char* in) {
-    int i = 0;
-    while (in[i]) {
-        in[i] = tolower(in[i]);
-        i++;
-    }
-}
-
 bool is_token_label(Token token) {
     return token.data[token.size-1] == ':';
 }
@@ -180,7 +182,7 @@ bool is_token_label(Token token) {
 //     0, 1, 4, 0, 4, 1, 2, 8, 0, 0, 4, 0, 4, 4, 2, 8,
 // };
 
-static const char* OPCODE_TABLE_NO_OPERAND[] = {
+static const char* INSTRUCTION_TABLE_NO_OPERAND[] = {
     "mov",  "mvi",  "lxi", "lda",  "sta",  "lhld", "shld", "ldax",
     "stax", "xchg", "add", "adi",  "adc",  "aci",  "sub",  "sui",
     "sbb",  "sbi",  "inr", "dcr",  "inx",  "dcx",  "dad",  "daa",
@@ -235,9 +237,9 @@ static const OpcodeOperandType OPERAND_TYPE_TABLE[] = {
      11, 11, 0,  0,  0,  0
 };
 
-int find_opcode_no_operand(char *to_find) {
+int find_instruction_no_operand(char *to_find) {
     for (size_t i = 0; i < 78; i++) {
-        if (strcmp(to_find, OPCODE_TABLE_NO_OPERAND[i]) == 0) {
+        if (strcmp(to_find, INSTRUCTION_TABLE_NO_OPERAND[i]) == 0) {
             return i;
         }
     }
@@ -265,20 +267,20 @@ OpcodeOperandType get_operand_type(Token token) {
 
     string_to_lower(temp);
 
-    int opcode_index = find_opcode_no_operand(temp);
+    int instruction_index = find_instruction_no_operand(temp);
 
-    if (opcode_index == -1) {
-        fprintf(stderr, "ERROR: opcode doesnt exist: %s\n", temp);
+    if (instruction_index == -1) {
+        fprintf(stderr, "ERROR: instruction doesnt exist: %s\n", temp);
         exit(EXIT_FAILURE);
     }
-    return OPERAND_TYPE_TABLE[opcode_index];
+    return OPERAND_TYPE_TABLE[instruction_index];
 }
 
-uint8_t token_to_val(Token *to_convert) {
-    if (to_convert->data[to_convert->size-1] == 'H') {
+uint16_t token_to_val(Token *to_convert) {
+    if (to_convert->data[to_convert->size-1] == 'h') {
         to_convert->data[to_convert->size-1] = '\0';
         return strtol(to_convert->data, NULL, 16);
-    } else if (to_convert->data[to_convert->size-1] == 'B') {
+    } else if (to_convert->data[to_convert->size-1] == 'b') {
         to_convert->data[to_convert->size-1] = '\0';
         return strtol(to_convert->data, NULL, 2);
     } else {
@@ -288,7 +290,7 @@ uint8_t token_to_val(Token *to_convert) {
 
 int main() {
 
-    Tokens tokens = tokenize("LXI B,20");
+    Tokens tokens = tokenize("JMP 1111111100001000B");
 
     for (size_t i = 0; i < tokens.count; i++) {
         printf("%s\n", tokens.items[i].data);
@@ -306,10 +308,7 @@ int main() {
 
         switch (opcode_operand_type) {
             case OP_NONE: {
-                char temp[MAX_TOKEN_LEN];
-                strcpy(temp, tokens.items[i].data);
-                string_to_lower(temp);
-                vec_append(byte_code, find_opcode(temp));
+                vec_append(byte_code, find_opcode(tokens.items[i].data));
                 break;
             }
             case OP_REG: case OP_RESET_NUMBER: case OP_RP: {
@@ -318,24 +317,17 @@ int main() {
                 strcat(temp, " ");
                 i++;
                 strcat(temp, tokens.items[i].data);
-                string_to_lower(temp);
                 vec_append(byte_code, find_opcode(temp));
                 break;
             }
             case OP_D8: case OP_PORT: {
-                char temp[MAX_TOKEN_LEN];
-                strcpy(temp, tokens.items[i].data);
-                string_to_lower(temp);
-                vec_append(byte_code, find_opcode(temp));
+                vec_append(byte_code, find_opcode(tokens.items[i].data));
                 i++;
                 vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
                 break;
             }
             case OP_D16: case OP_ADDRESS: case OP_RP_D16: {
-                char temp[MAX_TOKEN_LEN];
-                strcpy(temp, tokens.items[i].data);
-                string_to_lower(temp);
-                vec_append(byte_code, find_opcode(temp));
+                vec_append(byte_code, find_opcode(tokens.items[i].data));
                 i++;
                 uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
                 vec_append(byte_code, (uint8_t)value);
@@ -348,7 +340,6 @@ int main() {
                 strcat(temp, " ");
                 i++;
                 strcat(temp, tokens.items[i].data);
-                string_to_lower(temp);
                 vec_append(byte_code, find_opcode(temp));
                 i++;
                 vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
@@ -360,7 +351,6 @@ int main() {
                 strcat(temp, " ");
                 i++;
                 strcat(temp, tokens.items[i].data);
-                string_to_lower(temp);
                 vec_append(byte_code, find_opcode(temp));
                 i++;
                 uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
@@ -377,7 +367,6 @@ int main() {
                 strcat(temp, ",");
                 i++;
                 strcat(temp, tokens.items[i].data);
-                string_to_lower(temp);
                 vec_append(byte_code, find_opcode(temp));
                 break;
             }
