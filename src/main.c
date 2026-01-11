@@ -23,11 +23,7 @@ typedef struct {
 } Tokens;
 
 void string_to_lower(char* in) {
-    int i = 0;
-    while (in[i]) {
-        in[i] = tolower(in[i]);
-        i++;
-    }
+    for (size_t i = 0; in[i]; i++) in[i] = tolower(in[i]);
 }
 
 void tokens_append_bfr(Tokens *tokens, char bfr[32], uint8_t *current_bfr_size) {
@@ -96,68 +92,6 @@ static const char* OPCODE_TABLE[] = {
     "rm",      "sphl",     "jm",      "ei",      "cm",      "x",        "cpi",     "rst 7"
 };
 
-Tokens tokenize(char *to_tokenize) {
-
-    Tokens tokens;
-    tokens.count = 0;
-    tokens.capacity = 100;
-    tokens.items = malloc(sizeof(Token) * tokens.capacity);
-
-    size_t ptr = 0;
-    char bfr[MAX_TOKEN_LEN];
-    uint8_t current_bfr_size = 0;
-
-    TokenizerState state = STATE_DEFAULT;
-
-    while(to_tokenize[ptr]) {
-
-        char c = to_tokenize[ptr];
-
-        switch (state) {
-            case STATE_DEFAULT: {
-                if (c == ';') {
-                    state = STATE_COMMENT;
-                } else if (!isspace(c)) {
-                    state = STATE_WORD;
-                    bfr[current_bfr_size++] = c;
-                }
-                break;
-            }
-            case STATE_WORD: {
-                if (c == ';') {
-                    tokens_append_bfr(&tokens, bfr, &current_bfr_size);
-                    state = STATE_COMMENT;
-                }
-                else if (isspace(c) || c==',') {
-                    tokens_append_bfr(&tokens, bfr, &current_bfr_size);
-                    state = STATE_DEFAULT;
-                } else {
-                    if (current_bfr_size < MAX_TOKEN_LEN-1) {
-                        bfr[current_bfr_size++] = c;
-                    } else {
-                        fprintf(stderr, "ERROR: Token size exceeded limit\n");
-                        exit(EXIT_FAILURE);
-                    }
-                }
-                break;
-            }
-            case STATE_COMMENT: {
-                if (c == '\n') {
-                    state = STATE_DEFAULT;
-                }
-                break;
-            }
-        }
-
-        ptr++;
-    }
-
-    if (state == STATE_WORD) {
-        tokens_append_bfr(&tokens, bfr, &current_bfr_size);
-    }
-
-    return tokens;
-}
 
 bool is_token_label(Token token) {
     return token.data[token.size-1] == ':';
@@ -276,24 +210,190 @@ OpcodeOperandType get_operand_type(Token token) {
     return OPERAND_TYPE_TABLE[instruction_index];
 }
 
-uint16_t token_to_val(Token *to_convert) {
+typedef struct {
+    uint8_t byte_len;
+    uint8_t token_skip;
+} InstInfo;
+
+InstInfo get_inst_info(OpcodeOperandType type) {
+    switch (type) {
+        case OP_NONE:
+            return (InstInfo){1, 0};
+        case OP_REG:
+        case OP_RESET_NUMBER:
+        case OP_RP:
+            return (InstInfo){1, 1};
+        case OP_D8:
+        case OP_PORT:
+            return (InstInfo){2, 1};
+        case OP_REG_D8:
+            return (InstInfo){2, 2};
+        case OP_D16:
+        case OP_ADDRESS:
+        case OP_RP_D16:
+            return (InstInfo){3, 1};
+        case OP_REG_D16:
+            return (InstInfo){3, 2};
+        case OP_REG_REG:
+            return (InstInfo){1, 2};
+        default:
+            return (InstInfo){0, 0};
+    }
+}
+
+typedef struct {
+    char* name;
+    uint8_t name_size;
+    uint16_t address;
+} Label;
+
+typedef struct {
+    Label *items;
+    size_t count;
+    size_t capacity;
+} Labels;
+
+void labels_append(Labels *labels, Label *label) {
+    if (labels->count + 1 >= labels->capacity) {
+        labels->capacity *= 2;
+
+        Label *temp = realloc(labels->items, sizeof(Label) * labels->capacity);
+        if (!temp) {
+            fprintf(stderr, "ERROR: Memory allocation failed\n");
+            exit(EXIT_FAILURE);
+        }
+        labels->items = temp;
+    }
+
+    labels->items[labels->count++] = *label;
+}
+
+Labels find_labels(Tokens tokens) {
+    size_t current_byte = 0;
+
+    Labels labels;
+    labels.count = 0;
+    labels.capacity = 100;
+    labels.items = malloc(sizeof(Label) * labels.capacity);
+
+    for (size_t i = 0; i < tokens.count; i++) {
+        if (is_token_label(tokens.items[i])) {
+            Label label;
+            label.name_size = tokens.items[i].size;
+            label.name = malloc(label.name_size);
+            memcpy(label.name, tokens.items[i].data, tokens.items[i].size-1);
+            label.address = current_byte;
+            labels_append(&labels, &label);
+        } else {
+            InstInfo inst_info = get_inst_info(get_operand_type(tokens.items[i]));
+            i += inst_info.token_skip;
+            current_byte += inst_info.byte_len;
+        }
+    }
+
+    return labels;
+}
+
+uint16_t get_value_from_label(Labels labels, char* label_name) {
+    for (size_t i = 0; i < labels.count; i++) {
+        if (strcmp(labels.items[i].name, label_name) == 0) {
+            return labels.items[i].address;
+        }
+    }
+    fprintf(stderr, "ERROR: Label doesnt exist");
+    exit(EXIT_FAILURE);
+}
+
+uint16_t token_to_val(Labels labels, Token *to_convert) {
     if (to_convert->data[to_convert->size-1] == 'h') {
         to_convert->data[to_convert->size-1] = '\0';
         return strtol(to_convert->data, NULL, 16);
     } else if (to_convert->data[to_convert->size-1] == 'b') {
         to_convert->data[to_convert->size-1] = '\0';
         return strtol(to_convert->data, NULL, 2);
+    } else if (!isdigit(to_convert->data[0])) {
+        return get_value_from_label(labels, to_convert->data);
     } else {
         return strtol(to_convert->data, NULL, 10);
     }
 }
 
+Tokens tokenize(char *to_tokenize) {
+
+    Tokens tokens;
+    tokens.count = 0;
+    tokens.capacity = 100;
+    tokens.items = malloc(sizeof(Token) * tokens.capacity);
+
+    size_t ptr = 0;
+    char bfr[MAX_TOKEN_LEN];
+    uint8_t current_bfr_size = 0;
+
+    TokenizerState state = STATE_DEFAULT;
+
+    uint16_t current_byte;
+
+    while(to_tokenize[ptr]) {
+
+        char c = to_tokenize[ptr];
+
+        switch (state) {
+            case STATE_DEFAULT: {
+                if (c == ';') {
+                    state = STATE_COMMENT;
+                } else if (!isspace(c) && c != ',') {
+                    state = STATE_WORD;
+                    bfr[current_bfr_size++] = c;
+                }
+                break;
+            }
+            case STATE_WORD: {
+                if (c == ';') {
+                    tokens_append_bfr(&tokens, bfr, &current_bfr_size);
+                    state = STATE_COMMENT;
+                }
+                else if (isspace(c) || c == ',') {
+                    tokens_append_bfr(&tokens, bfr, &current_bfr_size);
+                    state = STATE_DEFAULT;
+                } else {
+                    if (current_bfr_size < MAX_TOKEN_LEN-1) {
+                        bfr[current_bfr_size++] = c;
+                    } else {
+                        fprintf(stderr, "ERROR: Token size exceeded limit\n");
+                        exit(EXIT_FAILURE);
+                    }
+                }
+                break;
+            }
+            case STATE_COMMENT: {
+                if (c == '\n') {
+                    state = STATE_DEFAULT;
+                }
+                break;
+            }
+        }
+
+        ptr++;
+    }
+
+    if (state == STATE_WORD) {
+        tokens_append_bfr(&tokens, bfr, &current_bfr_size);
+    }
+
+    return tokens;
+}
+
 int main() {
 
-    Tokens tokens = tokenize("JMP 1111111100001000B");
+    Tokens tokens = tokenize(" ADI 10;\n START: JMP START");
+    Labels labels = find_labels(tokens);
 
-    for (size_t i = 0; i < tokens.count; i++) {
-        printf("%s\n", tokens.items[i].data);
+    // for (size_t i = 0; i < tokens.count; i++) {
+    //     printf("%s\n", tokens.items[i].data);
+    // }
+
+    for (size_t i = 0; i < labels.count; i++) {
+        printf("%s: %d\n", labels.items[i].name, labels.items[i].address);
     }
 
     vec(uint8_t) byte_code;
@@ -323,13 +423,13 @@ int main() {
             case OP_D8: case OP_PORT: {
                 vec_append(byte_code, find_opcode(tokens.items[i].data));
                 i++;
-                vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
+                vec_append(byte_code, (uint8_t)token_to_val(labels, &tokens.items[i]));
                 break;
             }
             case OP_D16: case OP_ADDRESS: case OP_RP_D16: {
                 vec_append(byte_code, find_opcode(tokens.items[i].data));
                 i++;
-                uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
+                uint16_t value = (uint16_t)token_to_val(labels, &tokens.items[i]);
                 vec_append(byte_code, (uint8_t)value);
                 vec_append(byte_code, (uint8_t)(value >> 8));
                 break;
@@ -342,7 +442,7 @@ int main() {
                 strcat(temp, tokens.items[i].data);
                 vec_append(byte_code, find_opcode(temp));
                 i++;
-                vec_append(byte_code, (uint8_t)token_to_val(&tokens.items[i]));
+                vec_append(byte_code, (uint8_t)token_to_val(labels, &tokens.items[i]));
                 break;
             }
             case OP_REG_D16: {
@@ -353,7 +453,7 @@ int main() {
                 strcat(temp, tokens.items[i].data);
                 vec_append(byte_code, find_opcode(temp));
                 i++;
-                uint16_t value = (uint16_t)token_to_val(&tokens.items[i]);
+                uint16_t value = (uint16_t)token_to_val(labels, &tokens.items[i]);
                 vec_append(byte_code, (uint8_t)value);
                 vec_append(byte_code, (uint8_t)(value >> 8));
                 break;
