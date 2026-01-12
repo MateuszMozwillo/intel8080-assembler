@@ -1,4 +1,26 @@
 #include "assembler.h"
+#include "vector.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+void* xmalloc(size_t size) {
+    void *ptr = malloc(size);
+    if (ptr == NULL) {
+        fprintf(stderr, "FATAL ERROR: Out of memory (malloc failed for %zu bytes)\n", size);
+        exit(EXIT_FAILURE);
+    }
+    return ptr;
+}
+
+void* xrealloc(void *ptr, size_t size) {
+    void *new_ptr = realloc(ptr, size);
+    if (new_ptr == NULL && size > 0) {
+        fprintf(stderr, "FATAL ERROR: Out of memory (realloc failed for %zu bytes)\n", size);
+        exit(EXIT_FAILURE);
+    }
+    return new_ptr;
+}
 
 void string_to_lower(char* in) {
     for (size_t i = 0; in[i]; i++) in[i] = tolower(in[i]);
@@ -8,17 +30,12 @@ void tokens_append_bfr(Tokens *tokens, char bfr[32], uint8_t *current_bfr_size) 
     if (tokens->count + 1 >= tokens->capacity) {
         tokens->capacity *= 2;
 
-        Token *temp = realloc(tokens->items, sizeof(Token) * tokens->capacity);
-        if (!temp) {
-            fprintf(stderr, "ERROR: Memory allocation failed\n");
-            exit(EXIT_FAILURE);
-        }
-        tokens->items = temp;
+        tokens->items = xrealloc(tokens->items, sizeof(Token) * tokens->capacity);;
     }
 
     bfr[*current_bfr_size] = 0;
 
-    tokens->items[tokens->count].data = malloc(sizeof(char) * (*current_bfr_size + 1));
+    tokens->items[tokens->count].data = xmalloc(sizeof(char) * (*current_bfr_size + 1));
     memcpy(tokens->items[tokens->count].data, bfr, *current_bfr_size + 1);
 
     string_to_lower(tokens->items[tokens->count].data);
@@ -27,6 +44,16 @@ void tokens_append_bfr(Tokens *tokens, char bfr[32], uint8_t *current_bfr_size) 
 
     *current_bfr_size = 0;
     tokens->count++;
+}
+
+void free_tokens(Tokens *tokens) {
+    for (size_t i = 0; i < tokens->count; i++) {
+        free(tokens->items[i].data);
+    }
+    free(tokens->items);
+    tokens->items = NULL;
+    tokens->count = 0;
+    tokens->capacity = 0;
 }
 
 bool is_token_label(Token token) {
@@ -96,12 +123,7 @@ void labels_append(Labels *labels, Label *label) {
     if (labels->count + 1 >= labels->capacity) {
         labels->capacity *= 2;
 
-        Label *temp = realloc(labels->items, sizeof(Label) * labels->capacity);
-        if (!temp) {
-            fprintf(stderr, "ERROR: Memory allocation failed\n");
-            exit(EXIT_FAILURE);
-        }
-        labels->items = temp;
+        labels->items = xrealloc(labels->items, sizeof(Label) * labels->capacity);;
     }
 
     labels->items[labels->count++] = *label;
@@ -113,16 +135,24 @@ Labels find_labels(Tokens tokens) {
     Labels labels;
     labels.count = 0;
     labels.capacity = 100;
-    labels.items = malloc(sizeof(Label) * labels.capacity);
+    labels.items = xmalloc(sizeof(Label) * labels.capacity);
 
     for (size_t i = 0; i < tokens.count; i++) {
         if (is_token_label(tokens.items[i])) {
             Label label;
-            label.name_size = tokens.items[i].size;
-            label.name = malloc(label.name_size);
+            label.name_size = tokens.items[i].size-1;
+            label.name = xmalloc(label.name_size);
             memcpy(label.name, tokens.items[i].data, tokens.items[i].size-1);
+            label.name[label.name_size] = 0;
             label.address = current_byte;
             labels_append(&labels, &label);
+        } else if (strcmp(tokens.items[i].data, "db") == 0) {
+            current_byte += 1;
+            i++;
+        }
+        else if (strcmp(tokens.items[i].data, "dw") == 0) {
+            current_byte += 2;
+            i++;
         } else {
             InstInfo inst_info = get_inst_info(get_operand_type(tokens.items[i]));
             i += inst_info.token_skip;
@@ -133,12 +163,23 @@ Labels find_labels(Tokens tokens) {
     return labels;
 }
 
+void labels_free(Labels *labels) {
+    for (size_t i = 0; i < labels->count; i++) {
+        free(labels->items[i].name);
+    }
+    free(labels->items);
+    labels->items = NULL;
+    labels->count = 0;
+    labels->capacity = 0;
+}
+
 uint16_t get_value_from_label(Labels labels, char* label_name) {
     for (size_t i = 0; i < labels.count; i++) {
         if (strcmp(labels.items[i].name, label_name) == 0) {
             return labels.items[i].address;
         }
     }
+    printf("%s, %s\n", label_name, labels.items[0].name);
     fprintf(stderr, "ERROR: Label doesnt exist");
     exit(EXIT_FAILURE);
 }
@@ -162,7 +203,7 @@ Tokens tokenize(char *to_tokenize) {
     Tokens tokens;
     tokens.count = 0;
     tokens.capacity = 100;
-    tokens.items = malloc(sizeof(Token) * tokens.capacity);
+    tokens.items = xmalloc(sizeof(Token) * tokens.capacity);
 
     size_t ptr = 0;
     char bfr[MAX_TOKEN_LEN];
@@ -235,6 +276,23 @@ ByteCode generate_byte_code(char* code) {
             continue;
         }
 
+        if (strcmp(tokens.items[i].data, "db") == 0) {
+
+            vec_append(bytes, (uint8_t)token_to_val(labels, &tokens.items[++i]));
+
+            continue;
+        }
+
+        if (strcmp(tokens.items[i].data, "dw") == 0) {
+
+            i++;
+            uint16_t value = (uint16_t)token_to_val(labels, &tokens.items[i]);
+            vec_append(bytes, (uint8_t)value);
+            vec_append(bytes, (uint8_t)(value >> 8));
+
+            continue;
+        }
+
         OpcodeOperandType opcode_operand_type = get_operand_type(tokens.items[i]);
 
         switch (opcode_operand_type) {
@@ -304,7 +362,8 @@ ByteCode generate_byte_code(char* code) {
         }
     }
 
-    free(tokens.items);
+    free_tokens(&tokens);
+    labels_free(&labels);
 
     ByteCode byte_code;
     byte_code.bytes = bytes.data;

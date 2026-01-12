@@ -124,8 +124,8 @@ typedef struct {
 } Labels;
 
 typedef struct {
-    uint8_t *bytes;
     size_t len;
+    uint8_t *bytes;
 } ByteCode;
 
 ByteCode generate_byte_code(char* code);
